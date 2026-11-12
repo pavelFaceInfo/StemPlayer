@@ -1,0 +1,7 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- four vertical "faders" -->
+    <path android:fillColor="#FFFFFF" android:pathData="M36,34h4v40h-4z M48,34h4v40h-4z M60,34h4v40h-4z M72,34h4v40h-4z"/>
+    <path android:fillColor="#FFD54F" android:pathData="M33,44h10v6h-10z M45,60h10v6h-10z M57,40h10v6h-10z M69,54h10v6h-10z"/>
+</vector>
