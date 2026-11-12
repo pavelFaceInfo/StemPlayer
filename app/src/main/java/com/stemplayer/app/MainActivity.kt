@@ -1,6 +1,9 @@
 package com.stemplayer.app
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -37,6 +40,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Needed to show the playback notification on Android 13+.
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
         setContent {
             val dark = isSystemInDarkTheme()
             MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
@@ -257,7 +266,7 @@ fun PlayerScreen(vm: AppViewModel, song: Song) {
                         value = dragging ?: if (duration > 0) position.toFloat() / duration else 0f,
                         onValueChange = { dragging = it },
                         onValueChangeFinished = {
-                            dragging?.let { player?.seekToMs((it * duration).toLong()) }
+                            dragging?.let { vm.seekToMs((it * duration).toLong()) }
                             dragging = null
                         },
                     )
@@ -271,10 +280,10 @@ fun PlayerScreen(vm: AppViewModel, song: Song) {
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        IconButton(onClick = { player?.seekToMs(0) }) {
+                        IconButton(onClick = { vm.seekToMs(0) }) {
                             Icon(Icons.Default.SkipPrevious, "Back to start")
                         }
-                        IconButton(onClick = { player?.seekToMs(position - 5000) }) {
+                        IconButton(onClick = { vm.seekToMs(position - 5000) }) {
                             Icon(Icons.Default.Replay5, "Back 5 seconds")
                         }
                         FilledIconButton(onClick = vm::togglePlay, modifier = Modifier.size(64.dp)) {
@@ -284,7 +293,7 @@ fun PlayerScreen(vm: AppViewModel, song: Song) {
                                 modifier = Modifier.size(36.dp),
                             )
                         }
-                        IconButton(onClick = { player?.seekToMs(position + 5000) }) {
+                        IconButton(onClick = { vm.seekToMs(position + 5000) }) {
                             Icon(Icons.Default.Forward5, "Forward 5 seconds")
                         }
                     }
