@@ -1,0 +1,167 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<style>
+  html, body { margin: 0; background: #fff; -webkit-tap-highlight-color: transparent; }
+  #msg { padding: 32px 16px; font: 16px sans-serif; color: #555; text-align: center; }
+  #score { position: relative; }
+  #pages svg { display: block; margin: 0 auto; }
+  #hl {
+    position: absolute; display: none; pointer-events: none; z-index: 1;
+    background: rgba(255, 170, 0, 0.28); border-radius: 4px;
+    transition: left 0.12s, top 0.12s, width 0.12s, height 0.12s;
+  }
+</style>
+</head>
+<body>
+<div id="msg">Loading score…</div>
+<div id="score"><div id="hl"></div><div id="pages"></div></div>
+<script src="verovio-toolkit-wasm.js"></script>
+<script>
+  // Bridge provided by the app as window.Android:
+  //   getScore(): MusicXML text, getMeasureNumbers(): JSON array of measure numbers in document order,
+  //   getZoom(): Verovio scale, onMeasureTap(index), onRendered().
+  var tk = null, loaded = false;
+  var zoom = Number(Android.getZoom()) || 35;
+  var nums = JSON.parse(Android.getMeasureNumbers());
+  var rects = [];        // per rendered measure: {x, y, w, h} in #score coordinates
+  var svgToScore = [];   // rendered measure -> score measure index
+  var scoreToSvg = [];   // score measure index -> rendered measure
+  var current = -1, renderedWidth = 0, lastTouch = 0;
+  var msg = document.getElementById('msg'), pages = document.getElementById('pages'),
+      hl = document.getElementById('hl'), scoreEl = document.getElementById('score');
+
+  verovio.module.onRuntimeInitialized = function () {
+    try {
+      tk = new verovio.toolkit();
+      setOpts();
+      loaded = tk.loadData(Android.getScore());
+      if (!loaded) { msg.textContent = 'Could not display this score.'; return; }
+      render();
+    } catch (e) {
+      msg.textContent = 'Could not display this score: ' + e;
+    }
+  };
+
+  function setOpts() {
+    var w = window.innerWidth;
+    tk.setOptions({
+      scale: zoom,
+      pageWidth: Math.max(500, Math.round(w * 100 / zoom)),
+      pageHeight: 60000,
+      adjustPageHeight: true,
+      breaks: 'auto',
+      header: 'none',
+      footer: 'none',
+      pageMarginLeft: 30, pageMarginRight: 30, pageMarginTop: 40, pageMarginBottom: 40,
+    });
+  }
+
+  function render() {
+    if (!loaded) return;
+    if (window.innerWidth === 0) return; // not laid out yet; the resize handler renders later
+    renderedWidth = window.innerWidth;
+    setOpts();
+    tk.redoLayout();
+    var html = '';
+    var count = tk.getPageCount();
+    for (var p = 1; p <= count; p++) html += tk.renderToSVG(p);
+    pages.innerHTML = html;
+    msg.style.display = 'none';
+    mapMeasures();
+    measureRects();
+    if (current >= 0) highlight(current, true);
+    Android.onRendered();
+  }
+
+  // Align rendered measures with the score's measures by their numbers, in order, so
+  // measures Verovio merges (e.g. multi-measure rests) don't shift everything after them.
+  function mapMeasures() {
+    var els = pages.querySelectorAll('g.measure');
+    svgToScore = []; scoreToSvg = new Array(nums.length).fill(-1);
+    var k = 0;
+    for (var j = 0; j < els.length; j++) {
+      var n = null;
+      try { n = tk.getElementAttr(els[j].id).n; } catch (e) {}
+      var f = -1;
+      if (n != null) {
+        for (var t = k; t < Math.min(nums.length, k + 64); t++) if (nums[t] == n) { f = t; break; }
+      }
+      if (f < 0) f = Math.min(k, nums.length - 1);
+      svgToScore[j] = f;
+      if (scoreToSvg[f] < 0) scoreToSvg[f] = j;
+      k = f + 1;
+    }
+    var last = 0;
+    for (var i = 0; i < scoreToSvg.length; i++) {
+      if (scoreToSvg[i] < 0) scoreToSvg[i] = last; else last = scoreToSvg[i];
+    }
+  }
+
+  function measureRects() {
+    var base = scoreEl.getBoundingClientRect();
+    rects = Array.prototype.map.call(pages.querySelectorAll('g.measure'), function (el) {
+      var r = el.getBoundingClientRect();
+      return { x: r.left - base.left, y: r.top - base.top, w: r.width, h: r.height };
+    });
+  }
+
+  function highlight(i, force) {
+    if (i === current && !force) return;
+    current = i;
+    if (i < 0 || !rects.length) { hl.style.display = 'none'; return; }
+    var r = rects[scoreToSvg[i]];
+    if (!r) { hl.style.display = 'none'; return; }
+    var pad = 3;
+    hl.style.left = (r.x - pad) + 'px';
+    hl.style.top = (r.y - pad) + 'px';
+    hl.style.width = (r.w + 2 * pad) + 'px';
+    hl.style.height = (r.h + 2 * pad) + 'px';
+    hl.style.display = 'block';
+    // Follow the music, unless the user is scrolling around right now.
+    if (Date.now() - lastTouch < 2500) return;
+    var top = scoreEl.offsetTop + r.y, bottom = top + r.h, viewTop = window.scrollY, viewH = window.innerHeight;
+    if (top < viewTop || bottom > viewTop + viewH) {
+      window.scrollTo({ top: Math.max(0, top - Math.min(viewH * 0.2, 40)), behavior: 'smooth' });
+    }
+  }
+
+  function setZoom(z) {
+    zoom = z;
+    if (tk) render();
+  }
+
+  scoreEl.addEventListener('click', function (ev) {
+    if (!rects.length) return;
+    var base = scoreEl.getBoundingClientRect();
+    var x = ev.clientX - base.left, y = ev.clientY - base.top;
+    var best = -1, bestD = Infinity;
+    for (var j = 0; j < rects.length; j++) {
+      var r = rects[j];
+      var dx = Math.max(r.x - x, 0, x - (r.x + r.w));
+      var dy = Math.max(r.y - y, 0, y - (r.y + r.h));
+      var d = dx * dx + dy * dy * 4; // prefer the system the user tapped in
+      if (d < bestD) { bestD = d; best = j; }
+    }
+    if (best >= 0) {
+      lastTouch = 0;
+      highlight(svgToScore[best], true);
+      Android.onMeasureTap(svgToScore[best]);
+    }
+  });
+
+  window.addEventListener('touchstart', function () { lastTouch = Date.now(); }, { passive: true });
+  window.addEventListener('touchmove', function () { lastTouch = Date.now(); }, { passive: true });
+
+  var resizeTimer = null;
+  window.addEventListener('resize', function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      if (window.innerWidth !== renderedWidth) render(); else if (rects.length) { measureRects(); highlight(current, true); }
+    }, 150);
+  });
+</script>
+</body>
+</html>

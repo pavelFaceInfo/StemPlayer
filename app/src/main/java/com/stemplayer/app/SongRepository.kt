@@ -22,6 +22,8 @@ data class Song(
     val durationMs: Long,
     val createdAt: Long,
     val stems: List<Stem>,
+    /** File name of the score (plain MusicXML) in the song folder, if any. */
+    val score: String? = null,
 )
 
 /**
@@ -44,6 +46,7 @@ class SongRepository(private val context: Context) {
             put("sampleRate", song.sampleRate)
             put("durationMs", song.durationMs)
             put("createdAt", song.createdAt)
+            song.score?.let { put("score", it) }
             put("stems", JSONArray().apply {
                 song.stems.forEach {
                     put(JSONObject().apply {
@@ -71,11 +74,41 @@ class SongRepository(private val context: Context) {
         return uri.lastPathSegment ?: "Stem"
     }
 
+    /**
+     * Reads a .mxl / .musicxml file, checks that it can be understood and stores it in the song folder
+     * as plain MusicXML. Returns the stored file name.
+     */
+    fun saveScore(songId: String, uri: Uri): String {
+        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: throw IllegalStateException("Could not read the score file")
+        val xml = try {
+            ScoreTimeline.extractXml(bytes).also { ScoreTimeline.parse(it) }
+        } catch (e: Exception) {
+            throw IllegalStateException("Could not read the score: ${e.message}", e)
+        }
+        val dir = songDir(songId).apply { mkdirs() }
+        File(dir, SCORE_FILE).writeText(xml)
+        return SCORE_FILE
+    }
+
+    fun deleteScore(songId: String) {
+        File(songDir(songId), SCORE_FILE).delete()
+    }
+
+    fun readScore(song: Song): String? = song.score?.let { File(songDir(song.id), it) }?.takeIf { it.exists() }?.readText()
+
     /** Decodes all files and stores them as a new song. Calls [progress] with (done, total). */
-    fun import(name: String, uris: List<Uri>, stemNames: List<String>, progress: (Int, Int) -> Unit): Song {
+    fun import(
+        name: String,
+        uris: List<Uri>,
+        stemNames: List<String>,
+        scoreUri: Uri?,
+        progress: (Int, Int) -> Unit,
+    ): Song {
         val id = UUID.randomUUID().toString()
         val dir = songDir(id).apply { mkdirs() }
         try {
+            val score = scoreUri?.let { saveScore(id, it) }
             var sampleRate = 0
             var maxFrames = 0L
             val stems = uris.mapIndexed { i, uri ->
@@ -104,6 +137,7 @@ class SongRepository(private val context: Context) {
                 durationMs = maxFrames * 1000 / maxOf(sampleRate, 1),
                 createdAt = System.currentTimeMillis(),
                 stems = stems,
+                score = score,
             )
             save(song)
             return song
@@ -131,10 +165,18 @@ class SongRepository(private val context: Context) {
                     muted = s.optBoolean("muted", false),
                 )
             },
+            score = o.optString("score").ifEmpty { null },
         )
     }
 
     companion object {
+        const val SCORE_FILE = "score.musicxml"
+
+        fun isScoreFile(name: String): Boolean {
+            val n = name.lowercase()
+            return n.endsWith(".mxl") || n.endsWith(".musicxml") || n.endsWith(".xml")
+        }
+
         /**
          * Turns file names like "Ectenia-Soprano.mp3", "Ectenia-Alto.mp3" into a song name ("Ectenia")
          * and stem names ("Soprano", "Alto"), and orders stems S-A-T-B when the names allow it.

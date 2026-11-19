@@ -28,7 +28,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -93,7 +96,7 @@ fun SongListScreen(vm: AppViewModel) {
         floatingActionButton = {
             if (importing == null) {
                 ExtendedFloatingActionButton(
-                    onClick = { picker.launch(arrayOf("audio/*")) },
+                    onClick = { picker.launch(IMPORT_MIME_TYPES) },
                     icon = { Icon(Icons.Default.Add, null) },
                     text = { Text("New song") },
                 )
@@ -117,7 +120,8 @@ fun SongListScreen(vm: AppViewModel) {
                 Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Text(
                         "No songs yet.\nTap \"New song\" and select all the stem files of a piece " +
-                            "(e.g. the Soprano, Alto, Tenor and Bass exports from MuseScore).",
+                            "(e.g. the Soprano, Alto, Tenor and Bass exports from MuseScore), " +
+                            "optionally together with its score (.mxl).",
                         style = MaterialTheme.typography.bodyLarge,
                     )
                 }
@@ -184,7 +188,13 @@ fun SongRow(song: Song, onClick: () -> Unit, onRename: () -> Unit, onDelete: () 
 
 @Composable
 fun ImportDialog(vm: AppViewModel, uris: List<Uri>, onDismiss: () -> Unit) {
-    val (guessedSong, guessedStems) = remember(uris) { SongRepository.guessNames(vm.displayNames(uris)) }
+    val names = remember(uris) { vm.displayNames(uris) }
+    // Score files are recognised by their extension; everything else is a stem.
+    val scoreIndex = remember(names) { names.indexOfFirst { SongRepository.isScoreFile(it) } }
+    val audio = remember(names) {
+        names.indices.filter { !SongRepository.isScoreFile(names[it]) }
+    }
+    val (guessedSong, guessedStems) = remember(audio) { SongRepository.guessNames(audio.map { names[it] }) }
     var songName by remember { mutableStateOf(guessedSong) }
     val stemNames = remember { mutableStateListOf(*guessedStems.toTypedArray()) }
 
@@ -198,20 +208,35 @@ fun ImportDialog(vm: AppViewModel, uris: List<Uri>, onDismiss: () -> Unit) {
                     label = { Text("Song name") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(12.dp))
-                Text("Stems (${uris.size})", style = MaterialTheme.typography.titleSmall)
+                Text("Stems (${audio.size})", style = MaterialTheme.typography.titleSmall)
+                if (audio.isEmpty()) {
+                    Text("Select at least one audio file.", color = MaterialTheme.colorScheme.error)
+                }
                 stemNames.forEachIndexed { i, n ->
                     OutlinedTextField(
                         value = n, onValueChange = { stemNames[i] = it },
                         singleLine = true, modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                     )
                 }
+                Spacer(Modifier.height(12.dp))
+                Text("Score", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    if (scoreIndex >= 0) names[scoreIndex] else "None (you can add one later)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         },
         confirmButton = {
             TextButton(
-                enabled = songName.isNotBlank() && stemNames.all { it.isNotBlank() },
+                enabled = songName.isNotBlank() && audio.isNotEmpty() && stemNames.all { it.isNotBlank() },
                 onClick = {
-                    vm.import(songName.trim(), uris, stemNames.map { it.trim() })
+                    vm.import(
+                        songName.trim(),
+                        audio.map { uris[it] },
+                        stemNames.map { it.trim() },
+                        uris.getOrNull(scoreIndex),
+                    )
                     onDismiss()
                 },
             ) { Text("Import") }
@@ -220,16 +245,44 @@ fun ImportDialog(vm: AppViewModel, uris: List<Uri>, onDismiss: () -> Unit) {
     )
 }
 
+/** Audio files plus the types MusicXML files may be reported as (.mxl often has no known type). */
+val IMPORT_MIME_TYPES = arrayOf(
+    "audio/*",
+    "application/vnd.recordare.musicxml",
+    "application/vnd.recordare.musicxml+xml",
+    "application/xml",
+    "text/xml",
+    "application/zip",
+    "application/octet-stream",
+)
+
 // ---------------------------------------------------------------- Player
+
+private enum class Panel { None, Score, Mixer }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlayerScreen(vm: AppViewModel, song: Song) {
     val playing by vm.playing.collectAsStateWithLifecycle()
+    val scoreState by vm.score.collectAsStateWithLifecycle()
+    val zoom by vm.scoreZoom.collectAsStateWithLifecycle()
     val player = vm.player
     var renamingStem by remember { mutableStateOf<Int?>(null) }
+    var confirmRemoveScore by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
+    // Only one of score and mixer is expanded at a time; the score is shown first when there is one.
+    var panel by rememberSaveable(song.id) { mutableStateOf(if (song.score != null) Panel.Score else Panel.Mixer) }
 
     BackHandler { vm.close() }
+
+    LaunchedEffect(song.id, song.score) { vm.loadScore(song) }
+
+    val scorePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            vm.setScore(uri)
+            panel = Panel.Score
+        }
+    }
 
     // Keep the screen awake while practicing.
     val view = LocalView.current
@@ -244,9 +297,25 @@ fun PlayerScreen(vm: AppViewModel, song: Song) {
     LaunchedEffect(player) {
         while (true) {
             position = player?.positionMs() ?: 0L
-            delay(100)
+            delay(50)
         }
     }
+
+    val ready = scoreState as? ScoreState.Ready
+    val sync = remember(ready, duration) { ready?.let { ScoreSync(it.timeline, duration) } }
+    // The WebView outlives collapsing the score, so expanding it again is instant.
+    val context = LocalContext.current
+    val web = remember(ready) {
+        ready?.let { ScoreWebView(context, it.xml, it.timeline.measureNumbers, zoom) }
+    }
+    DisposableEffect(web) { onDispose { web?.destroy() } }
+    val currentPosition by rememberUpdatedState(position)
+    LaunchedEffect(web, sync) {
+        web?.onMeasureTap = { m -> sync?.startOf(m, currentPosition)?.let { vm.seekToMs(it); position = it } }
+    }
+    val measure = sync?.measureAt(dragging?.let { (it * duration).toLong() } ?: position) ?: -1
+    LaunchedEffect(web, measure) { web?.highlight(measure) }
+    LaunchedEffect(web, zoom) { web?.setZoom(zoom) }
 
     Scaffold(
         topBar = {
@@ -255,6 +324,23 @@ fun PlayerScreen(vm: AppViewModel, song: Song) {
                 navigationIcon = {
                     IconButton(onClick = { vm.close() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                    }
+                },
+                actions = {
+                    Box {
+                        IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "More") }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(
+                                text = { Text(if (song.score == null) "Add score…" else "Replace score…") },
+                                onClick = { menu = false; scorePicker.launch(arrayOf("*/*")) },
+                            )
+                            if (song.score != null) {
+                                DropdownMenuItem(
+                                    text = { Text("Remove score") },
+                                    onClick = { menu = false; confirmRemoveScore = true },
+                                )
+                            }
+                        }
                     }
                 },
             )
@@ -277,9 +363,12 @@ fun PlayerScreen(vm: AppViewModel, song: Song) {
                     }
                     Row(
                         Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Center,
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        PanelToggle("Score", Icons.Default.MusicNote, panel == Panel.Score) {
+                            panel = if (panel == Panel.Score) Panel.None else Panel.Score
+                        }
                         IconButton(onClick = { vm.seekToMs(0) }) {
                             Icon(Icons.Default.SkipPrevious, "Back to start")
                         }
@@ -296,23 +385,45 @@ fun PlayerScreen(vm: AppViewModel, song: Song) {
                         IconButton(onClick = { vm.seekToMs(position + 5000) }) {
                             Icon(Icons.Default.Forward5, "Forward 5 seconds")
                         }
+                        PanelToggle("Mixer", Icons.Default.Tune, panel == Panel.Mixer) {
+                            panel = if (panel == Panel.Mixer) Panel.None else Panel.Mixer
+                        }
                     }
                 }
             }
         },
     ) { pad ->
-        LazyColumn(Modifier.padding(pad).fillMaxSize(), contentPadding = PaddingValues(12.dp)) {
-            itemsIndexed(song.stems) { i, stem ->
-                StemCard(
-                    stem,
-                    onVolume = { vm.setVolume(i, it) },
-                    onVolumeDone = vm::persistCurrent,
-                    onMute = { vm.toggleMute(i) },
-                    onSolo = { vm.solo(i) },
-                    onRename = { renamingStem = i },
-                )
-                Spacer(Modifier.height(8.dp))
+        val content = Modifier.padding(pad).fillMaxSize()
+        when (panel) {
+            Panel.Score -> when (val st = scoreState) {
+                is ScoreState.Ready -> if (web != null) {
+                    ScorePanel(web, zoom, onZoom = vm::setScoreZoom, modifier = content)
+                }
+                ScoreState.Loading -> Box(content, contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                is ScoreState.Failed -> Message(content, st.message, "Choose another score") {
+                    scorePicker.launch(arrayOf("*/*"))
+                }
+                ScoreState.None -> Message(
+                    content,
+                    "This song has no score yet.\nAdd its MusicXML file (.mxl or .musicxml, e.g. exported " +
+                        "from MuseScore) to follow along and tap a measure to jump to it.",
+                    "Add score",
+                ) { scorePicker.launch(arrayOf("*/*")) }
             }
+            Panel.Mixer -> LazyColumn(content, contentPadding = PaddingValues(12.dp)) {
+                itemsIndexed(song.stems) { i, stem ->
+                    StemCard(
+                        stem,
+                        onVolume = { vm.setVolume(i, it) },
+                        onVolumeDone = vm::persistCurrent,
+                        onMute = { vm.toggleMute(i) },
+                        onSolo = { vm.solo(i) },
+                        onRename = { renamingStem = i },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+            Panel.None -> Box(content)
         }
     }
 
@@ -320,6 +431,40 @@ fun PlayerScreen(vm: AppViewModel, song: Song) {
         TextInputDialog("Rename stem", song.stems[i].name, onDismiss = { renamingStem = null }) {
             vm.renameStem(i, it); renamingStem = null
         }
+    }
+    if (confirmRemoveScore) {
+        AlertDialog(
+            onDismissRequest = { confirmRemoveScore = false },
+            title = { Text("Remove the score?") },
+            text = { Text("The score is removed from this song. Your original file is not touched.") },
+            confirmButton = {
+                TextButton(onClick = { vm.removeScore(); confirmRemoveScore = false }) { Text("Remove") }
+            },
+            dismissButton = { TextButton(onClick = { confirmRemoveScore = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+@Composable
+private fun PanelToggle(label: String, icon: ImageVector, expanded: Boolean, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        FilledTonalIconToggleButton(checked = expanded, onCheckedChange = { onClick() }) {
+            Icon(icon, if (expanded) "Collapse $label" else "Expand $label")
+        }
+        Text(label, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+@Composable
+private fun Message(modifier: Modifier, text: String, action: String, onAction: () -> Unit) {
+    Column(
+        modifier.padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(text, style = MaterialTheme.typography.bodyLarge)
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = onAction) { Text(action) }
     }
 }
 
