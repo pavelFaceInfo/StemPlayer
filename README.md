@@ -17,6 +17,19 @@ Android will ask you to allow your browser to "install unknown apps" — allow i
 2. Check the song and voice names (they are guessed from the file names) and tap **Import**.
 3. Open the song, set the volume of each voice, mute or solo voices, and press play.
 
+### Songs from Google Drive
+
+Tap **Update songs** to get songs from the choir's shared Google Drive folder (set in `DRIVE_FOLDER_ID`,
+`DriveSync.kt`). Each subfolder of it is one song: its voice files plus, optionally, its `.mxl` score. The
+folder name becomes the song name. The folder must be shared as "anyone with the link can view".
+
+- Songs that aren't in the app yet are downloaded and added right away.
+- Songs whose files changed on Drive are listed; tick the ones to replace and tap **Done**. Volume, mute,
+  song and voice names are kept. Unticked songs keep the app's copy and aren't offered again until their
+  files change on Drive again.
+- Songs are recognised by the **file names** of their voices. If the files are renamed on Drive, the song
+  is treated as a new one.
+
 The player shows either the **Score** or the **Mixer**; switch with the buttons next to the play
 controls. While playing, the current measure is highlighted and the score scrolls along. Tap a
 measure to jump there. A score can also be added, replaced or removed later from the ⋮ menu.

@@ -83,6 +83,7 @@ fun App(vm: AppViewModel = viewModel()) {
 fun SongListScreen(vm: AppViewModel) {
     val songs by vm.songs.collectAsStateWithLifecycle()
     val importing by vm.importing.collectAsStateWithLifecycle()
+    val sync by vm.sync.collectAsStateWithLifecycle()
     var picked by remember { mutableStateOf<List<Uri>?>(null) }
     var renaming by remember { mutableStateOf<Song?>(null) }
     var deleting by remember { mutableStateOf<Song?>(null) }
@@ -92,9 +93,20 @@ fun SongListScreen(vm: AppViewModel) {
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Stem Player") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Stem Player") },
+                actions = {
+                    TextButton(onClick = vm::syncFromDrive, enabled = importing == null && sync == null) {
+                        Icon(Icons.Default.CloudDownload, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Update songs")
+                    }
+                },
+            )
+        },
         floatingActionButton = {
-            if (importing == null) {
+            if (importing == null && sync == null) {
                 ExtendedFloatingActionButton(
                     onClick = { picker.launch(IMPORT_MIME_TYPES) },
                     icon = { Icon(Icons.Default.Add, null) },
@@ -119,7 +131,8 @@ fun SongListScreen(vm: AppViewModel) {
             if (songs.isEmpty() && importing == null) {
                 Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) {
                     Text(
-                        "No songs yet.\nTap \"New song\" and select all the stem files of a piece " +
+                        "No songs yet.\nTap \"Update songs\" to get the songs from the choir's Google Drive, " +
+                            "or tap \"New song\" and select all the stem files of a piece " +
                             "(e.g. the Soprano, Alto, Tenor and Bass exports from MuseScore), " +
                             "optionally together with its score (.mxl).",
                         style = MaterialTheme.typography.bodyLarge,
@@ -140,6 +153,7 @@ fun SongListScreen(vm: AppViewModel) {
         }
     }
 
+    sync?.let { SyncDialog(it, onDone = vm::finishSync) }
     picked?.let { uris ->
         ImportDialog(vm, uris, onDismiss = { picked = null })
     }
@@ -233,9 +247,8 @@ fun ImportDialog(vm: AppViewModel, uris: List<Uri>, onDismiss: () -> Unit) {
                 onClick = {
                     vm.import(
                         songName.trim(),
-                        audio.map { uris[it] },
-                        stemNames.map { it.trim() },
-                        uris.getOrNull(scoreIndex),
+                        audio.mapIndexed { i, idx -> StemInput(uris[idx], stemNames[i].trim(), source = names[idx]) },
+                        uris.getOrNull(scoreIndex)?.let { ScoreInput(it, source = names[scoreIndex]) },
                     )
                     onDismiss()
                 },
@@ -243,6 +256,89 @@ fun ImportDialog(vm: AppViewModel, uris: List<Uri>, onDismiss: () -> Unit) {
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+@Composable
+fun SyncDialog(state: SyncState, onDone: (Set<String>) -> Unit) {
+    when (state) {
+        is SyncState.Working -> AlertDialog(
+            onDismissRequest = {},
+            confirmButton = {},
+            title = { Text("Updating songs") },
+            text = {
+                Column {
+                    Text(state.message)
+                    Spacer(Modifier.height(12.dp))
+                    if (state.total > 0) {
+                        LinearProgressIndicator(
+                            progress = { state.step.toFloat() / state.total },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    } else {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                }
+            },
+        )
+        is SyncState.Review -> {
+            val selected = remember(state) { mutableStateListOf<String>() }
+            AlertDialog(
+                onDismissRequest = {},
+                title = { Text("Updating songs") },
+                text = {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        if (state.added.isEmpty() && state.updates.isEmpty() && state.failed.isEmpty()) {
+                            Text("All songs are up to date.")
+                        }
+                        if (state.added.isNotEmpty()) {
+                            Text("Added (${state.added.size})", style = MaterialTheme.typography.titleSmall)
+                            state.added.forEach { Text("• $it", style = MaterialTheme.typography.bodyMedium) }
+                            Spacer(Modifier.height(12.dp))
+                        }
+                        if (state.updates.isNotEmpty()) {
+                            Text("Changed on Drive (${state.updates.size})", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "Tick the songs to replace with the Drive version. " +
+                                    "Volume and mute settings are kept.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            state.updates.forEach { u ->
+                                val id = u.song.id
+                                val toggle = { if (id in selected) selected.remove(id) else selected.add(id) }
+                                Row(
+                                    Modifier.fillMaxWidth().clickable { toggle() }.padding(vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Checkbox(checked = id in selected, onCheckedChange = { toggle() })
+                                    Column(Modifier.weight(1f)) {
+                                        Text(u.song.name, style = MaterialTheme.typography.bodyLarge)
+                                        Text(
+                                            u.changes.joinToString(", "),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(12.dp))
+                        }
+                        if (state.failed.isNotEmpty()) {
+                            Text("Could not download", style = MaterialTheme.typography.titleSmall)
+                            state.failed.forEach {
+                                Text("• $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { onDone(selected.toSet()) }) {
+                        Text("Done")
+                    }
+                },
+            )
+        }
+    }
 }
 
 /** Audio files plus the types MusicXML files may be reported as (.mxl often has no known type). */
