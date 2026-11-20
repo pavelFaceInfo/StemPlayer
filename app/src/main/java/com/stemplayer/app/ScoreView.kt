@@ -34,6 +34,8 @@ class ScoreWebView(context: Context, private val xml: String, measureNumbers: Li
     private val numbersJson = JSONArray(measureNumbers).toString()
     @Volatile private var zoom = zoom
     private var lastHighlight = -1
+    /** Width of the view in CSS pixels, as laid out by the app (0 until laid out). */
+    @Volatile private var cssWidth = 0
     private val main = Handler(Looper.getMainLooper())
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -53,6 +55,15 @@ class ScoreWebView(context: Context, private val xml: String, measureNumbers: Li
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = true
         }
         addJavascriptInterface(Bridge(), "Android")
+        // The page's own resize event is unreliable when the phone rotates (the WebView isn't
+        // recreated), so tell it the new width whenever the view is resized.
+        addOnLayoutChangeListener { v, l, _, r, _, _, _, _, _ ->
+            val w = Math.round((r - l) / v.resources.displayMetrics.density)
+            if (w > 0 && w != cssWidth) {
+                cssWidth = w
+                evaluateJavascript("window.setWidth && setWidth($w)", null)
+            }
+        }
         loadUrl("https://appassets.androidplatform.net/assets/score/index.html")
     }
 
@@ -77,10 +88,12 @@ class ScoreWebView(context: Context, private val xml: String, measureNumbers: Li
         @JavascriptInterface fun getScore(): String = xml
         @JavascriptInterface fun getMeasureNumbers(): String = numbersJson
         @JavascriptInterface fun getZoom(): Int = zoom
+        @JavascriptInterface fun getWidth(): Int = cssWidth
         @JavascriptInterface fun onMeasureTap(index: Int) { main.post { onMeasureTap.invoke(index) } }
         @JavascriptInterface fun onRendered() {
             // Re-send the current measure in case it arrived before the score was ready.
             main.post {
+                view.invalidate()
                 val m = lastHighlight
                 lastHighlight = -2
                 if (m >= 0) highlight(m)

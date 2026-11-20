@@ -21,7 +21,7 @@
 <script src="verovio-toolkit-wasm.js"></script>
 <script>
   // Bridge provided by the app as window.Android:
-  //   getScore(): MusicXML text, getMeasureNumbers(): JSON array of measure numbers in document order,
+  //   getWidth(): view width in CSS pixels (0 if unknown), getScore(): MusicXML text, getMeasureNumbers(): JSON array of measure numbers in document order,
   //   getZoom(): Verovio scale, onMeasureTap(index), onRendered().
   var tk = null, loaded = false;
   var zoom = Number(Android.getZoom()) || 35;
@@ -45,8 +45,15 @@
     }
   };
 
+  // The app reports its width (via getWidth/setWidth) because window.innerWidth can lag after rotation.
+  var hostWidth = Number(Android.getWidth()) || 0;
+  function width() { return hostWidth || window.innerWidth; }
+  function setWidth(w) {
+    hostWidth = w;
+    if (tk && w !== renderedWidth) render();
+  }
   function setOpts() {
-    var w = window.innerWidth;
+    var w = width();
     tk.setOptions({
       scale: zoom,
       pageWidth: Math.max(500, Math.round(w * 100 / zoom)),
@@ -61,8 +68,8 @@
 
   function render() {
     if (!loaded) return;
-    if (window.innerWidth === 0) return; // not laid out yet; the resize handler renders later
-    renderedWidth = window.innerWidth;
+    if (width() === 0) return; // not laid out yet; setWidth or the resize handler renders later
+    renderedWidth = width();
     setOpts();
     tk.redoLayout();
     var html = '';
@@ -159,7 +166,7 @@
   window.addEventListener('resize', function () {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(function () {
-      if (window.innerWidth !== renderedWidth) render(); else if (rects.length) { measureRects(); highlight(current, true); }
+      if (width() !== renderedWidth) render(); else if (rects.length) { measureRects(); highlight(current, true); }
     }, 150);
   });
 </script>

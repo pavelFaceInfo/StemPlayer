@@ -37,6 +37,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -52,11 +55,26 @@ class MainActivity : ComponentActivity() {
         ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
+        hideSystemBars()
         setContent {
             val dark = isSystemInDarkTheme()
             MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
                 Surface(Modifier.fillMaxSize()) { App() }
             }
+        }
+    }
+
+    // Returning from the file picker or a dialog can bring the bars back.
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars()
+    }
+
+    /** Full screen: the status bar and navigation/gesture bar stay hidden until swiped in from the edge. */
+    private fun hideSystemBars() {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
         }
     }
 }
@@ -96,8 +114,10 @@ fun SongListScreen(vm: AppViewModel) {
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
+                windowInsets = SafeTop,
                 title = { Text("Stem Player") },
                 actions = {
                     TextButton(onClick = vm::syncFromDrive, enabled = importing == null && sync == null) {
@@ -357,6 +377,10 @@ val IMPORT_MIME_TYPES = arrayOf(
 
 // ---------------------------------------------------------------- Player
 
+// The system bars are hidden, so only the display cutout (camera hole) needs to be kept clear.
+private val SafeTop @Composable get() = WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
+private val SafeBottom @Composable get() = WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal)
+
 private enum class Panel { None, Score, Mixer }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -421,9 +445,10 @@ fun PlayerScreen(vm: AppViewModel, song: Song) {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     Scaffold(
-        contentWindowInsets = if (landscape) WindowInsets.safeDrawing else ScaffoldDefaults.contentWindowInsets,
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             if (!landscape) TopAppBar(
+                windowInsets = SafeTop,
                 title = { Text(song.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     IconButton(onClick = { vm.close() }) {
@@ -452,13 +477,13 @@ fun PlayerScreen(vm: AppViewModel, song: Song) {
         bottomBar = {
             if (landscape) Surface(tonalElevation = 3.dp) {
                 Box(
-                    Modifier.fillMaxWidth().navigationBarsPadding().padding(vertical = 4.dp),
+                    Modifier.fillMaxWidth().windowInsetsPadding(SafeBottom).padding(vertical = 4.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     PlayButton(playing, vm::togglePlay, size = 48.dp)
                 }
             } else Surface(tonalElevation = 3.dp) {
-                Column(Modifier.navigationBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Column(Modifier.windowInsetsPadding(SafeBottom).padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Slider(
                         value = dragging ?: if (duration > 0) position.toFloat() / duration else 0f,
                         onValueChange = { dragging = it },
