@@ -29,11 +29,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -413,9 +416,14 @@ fun PlayerScreen(vm: AppViewModel, song: Song) {
     LaunchedEffect(web, measure) { web?.highlight(measure) }
     LaunchedEffect(web, zoom) { web?.setZoom(zoom) }
 
+    // Landscape is a distraction-free mode: no top bar and only the play button at the bottom.
+    // Rotating back to portrait brings all controls back.
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+
     Scaffold(
+        contentWindowInsets = if (landscape) WindowInsets.safeDrawing else ScaffoldDefaults.contentWindowInsets,
         topBar = {
-            TopAppBar(
+            if (!landscape) TopAppBar(
                 title = { Text(song.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     IconButton(onClick = { vm.close() }) {
@@ -442,7 +450,14 @@ fun PlayerScreen(vm: AppViewModel, song: Song) {
             )
         },
         bottomBar = {
-            Surface(tonalElevation = 3.dp) {
+            if (landscape) Surface(tonalElevation = 3.dp) {
+                Box(
+                    Modifier.fillMaxWidth().navigationBarsPadding().padding(vertical = 4.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    PlayButton(playing, vm::togglePlay, size = 48.dp)
+                }
+            } else Surface(tonalElevation = 3.dp) {
                 Column(Modifier.navigationBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Slider(
                         value = dragging ?: if (duration > 0) position.toFloat() / duration else 0f,
@@ -471,13 +486,7 @@ fun PlayerScreen(vm: AppViewModel, song: Song) {
                         IconButton(onClick = { vm.seekToMs(position - 5000) }) {
                             Icon(Icons.Default.Replay5, "Back 5 seconds")
                         }
-                        FilledIconButton(onClick = vm::togglePlay, modifier = Modifier.size(64.dp)) {
-                            Icon(
-                                if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                if (playing) "Pause" else "Play",
-                                modifier = Modifier.size(36.dp),
-                            )
-                        }
+                        PlayButton(playing, vm::togglePlay, size = 64.dp)
                         IconButton(onClick = { vm.seekToMs(position + 5000) }) {
                             Icon(Icons.Default.Forward5, "Forward 5 seconds")
                         }
@@ -537,6 +546,17 @@ fun PlayerScreen(vm: AppViewModel, song: Song) {
                 TextButton(onClick = { vm.removeScore(); confirmRemoveScore = false }) { Text("Remove") }
             },
             dismissButton = { TextButton(onClick = { confirmRemoveScore = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+@Composable
+private fun PlayButton(playing: Boolean, onClick: () -> Unit, size: Dp) {
+    FilledIconButton(onClick = onClick, modifier = Modifier.size(size)) {
+        Icon(
+            if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+            if (playing) "Pause" else "Play",
+            modifier = Modifier.size(size * 9 / 16),
         )
     }
 }
